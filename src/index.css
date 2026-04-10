@@ -1,0 +1,21 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  font-family: Inter, Manrope, system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+  background:
+    radial-gradient(1100px 700px at 50% -30%, rgba(255, 145, 24, 0.22), transparent 60%),
+    radial-gradient(900px 500px at 100% 0%, rgba(255, 170, 69, 0.1), transparent 55%),
+    #020202;
+  color: #fff4e8;
+  min-height: 100vh;
+  letter-spacing: 0.01em;
+}
+
+h1,
+h2,
+p {
+  margin: 0;
+}
