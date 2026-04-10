@@ -1,69 +1,113 @@
 # Flyover Analytics Board
 
-A dedicated analytics dashboard for Flyover (Fast Bridge) LPs and researchers.
+Analytics dashboard and indexer for **Flyover** (Fast Bridge) liquidity providers and researchers. It ingests Liquidity Bridge Contract (LBC) logs into a local SQLite database and serves aggregated metrics to a React UI.
 
-## What this project includes
+## Features
 
-- Event indexer for `QuoteRequested`, `QuoteCompleted`, and `DepositTransferred`
-- Local SQLite event store
-- Metrics API for:
-  - 24h/7d peg-in volume
-  - Estimated bridge TVL
-  - LP leaderboard with success rates
-  - Quote request-to-delivery time scatter data
-- React dashboard with charts and leaderboard
+- **Indexer** — polls `eth_getLogs` for LBC events (see below), normalizes rows, and stores them in `flyover.db`.
+- **Metrics API** — Express server with board aggregates: 24h/7d volume, estimated TVL, LP leaderboard (volume and success rate), quote timing scatter data, and daily volume series.
+- **Dashboard** — React + Vite + Recharts; polls `/metrics/board` on an interval.
 
-## Step-by-step setup
+### Indexed events (LBC)
 
-1. Install dependencies
+The server tracks these Solidity events (names match the contract):
 
-```bash
-npm install
-```
+| Event | Role |
+| --- | --- |
+| `PegOutDeposit` | Peg-out quote / deposit signal |
+| `CallForUser` | Call execution (includes `success` and `quoteHash`) |
+| `PegInRegistered` | Peg-in transfer registration |
 
-2. Configure environment
+## Stack
 
-```bash
-cp .env.example .env
-```
+- **Frontend:** React 19, Vite 8, Recharts  
+- **Backend:** Express 5, [viem](https://viem.sh), [better-sqlite3](https://github.com/WiseLibs/better-sqlite3)  
+- **Runtime:** Node.js (ES modules)
 
-Then update `.env`:
+## Prerequisites
 
-- `CHAIN`: `rootstock` (mainnet), `rootstock-testnet`, or `sepolia`
-- `RPC_URL`: your chain RPC endpoint
-- `LBC_ADDRESS`: Liquidity Bridge Contract address
-- `START_BLOCK`: block to start indexing from
+- Node.js 20+ recommended  
+- An RPC URL that supports **`eth_getLogs`** (many public Rootstock endpoints do not)
 
-Example Rootstock mainnet config:
+## Setup
+
+1. **Install dependencies**
+
+   ```bash
+   npm install
+   ```
+
+2. **Environment**
+
+   Copy the example file and edit values:
+
+   ```bash
+   cp .env.example .env
+   ```
+
+   On Windows (cmd/PowerShell) you can use:
+
+   ```powershell
+   copy .env.example .env
+   ```
+
+3. **Run API, indexer, and dashboard together**
+
+   ```bash
+   npm run dev
+   ```
+
+   | URL | Description |
+   | --- | --- |
+   | [http://localhost:5173](http://localhost:5173) | Dashboard (Vite) |
+   | [http://localhost:4000/health](http://localhost:4000/health) | API health + last indexed block |
+   | [http://localhost:4000/metrics/board](http://localhost:4000/metrics/board) | Board metrics JSON |
+
+   In dev, Vite proxies `/health` and `/metrics` to the API, so the UI can call the same origin.
+
+### Environment variables
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `API_PORT` | HTTP port for the API | `4000` |
+| `CHAIN` | `rootstock`, `rootstock-testnet`, `rsk-mainnet`, `rsk-testnet`, or `sepolia` | `rootstock` |
+| `RPC_URL` | Chain JSON-RPC endpoint (must support logs) | `https://public-node.rsk.co` |
+| `LBC_ADDRESS` | Liquidity Bridge Contract (`0x…`) | `0x000…000` |
+| `START_BLOCK` | First block to index (bigint string) | `0` |
+| `POLL_INTERVAL_MS` | Pause between indexer rounds when caught up | `15000` |
+| `DASHBOARD_WINDOW_MS` | Rolling window for some dashboard metrics | `14` days |
+
+Example for Rootstock mainnet:
 
 ```env
+API_PORT=4000
 CHAIN=rootstock
 RPC_URL=https://30.rpc.thirdweb.com
-LBC_ADDRESS=0xYourLBCAddress
+LBC_ADDRESS=0xYourLbcAddress
 START_BLOCK=1234567
+POLL_INTERVAL_MS=15000
 ```
 
-Note: Some public Rootstock RPC endpoints do not expose `eth_getLogs`. If you see `the method eth_getLogs does not exist/is not available`, switch `RPC_URL` to one that supports logs (for example `https://30.rpc.thirdweb.com`) or use a provider key.
+If you see **`eth_getLogs` does not exist or is not available**, switch to a provider that exposes log queries (for example Thirdweb’s Rootstock RPC above) or your own API key.
 
-3. Run API + indexer + dashboard
+## NPM scripts
 
-```bash
-npm run dev
-```
+| Script | Command |
+| --- | --- |
+| `npm run dev` | API + indexer + Vite dev server |
+| `npm run dev:api` | API + indexer only |
+| `npm run dev:web` | Vite only |
+| `npm run indexer` | Standalone indexer process (`server/indexer.ts`) |
+| `npm run build` | Typecheck + production Vite build |
+| `npm run preview` | Serve built frontend |
+| `npm run lint` | ESLint |
 
-- Dashboard: [http://localhost:5173](http://localhost:5173)
-- API health: [http://localhost:4000/health](http://localhost:4000/health)
+## Project layout
 
-## Important implementation notes
+- `server/index.ts` — Express app and indexer bootstrap  
+- `server/indexer.ts` — Log polling and SQLite writes  
+- `server/db.ts` — Schema and queries  
+- `server/metrics.ts` — Aggregations for `/metrics/board`  
+- `server/config.ts` — Environment configuration  
+- `src/` — Dashboard UI  
 
-- `server/indexer.ts` polls logs and stores normalized rows in `flyover.db`.
-- `server/metrics.ts` computes aggregates directly from SQLite.
-- `src/App.tsx` refreshes metrics every 30 seconds.
-- `CHAIN` selection is resolved in `server/indexer.ts`.
-
-## Next improvements
-
-- Replace the placeholder ABI with your production LBC ABI.
-- Add token decimals/symbol support for non-ETH values.
-- Add chain + contract selectors in the UI.
-- Add tests for SQL metric aggregations.
