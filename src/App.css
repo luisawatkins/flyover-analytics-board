@@ -76,6 +76,62 @@
   background: #16110a;
 }
 
+.hero-cta:focus-visible {
+  outline: 2px solid #ff9118;
+  outline-offset: 2px;
+}
+
+.value-skeleton {
+  display: block;
+  width: 60%;
+  height: 36px;
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 145, 24, 0.15) 25%,
+    rgba(255, 145, 24, 0.35) 50%,
+    rgba(255, 145, 24, 0.15) 75%
+  );
+  background-size: 200% 100%;
+  animation: skeleton-shimmer 1.2s ease-in-out infinite;
+}
+
+@keyframes skeleton-shimmer {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.chart-placeholder {
+  color: #f3c796;
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 1rem;
+}
+
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.table-scroll {
+  overflow-x: auto;
+  margin-top: 4px;
+}
+
 .kpi-grid {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
@@ -156,7 +212,7 @@ td {
 }
 
 .table-card {
-  overflow: hidden;
+  overflow: visible;
 }
 
 .table-card table {

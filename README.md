@@ -72,9 +72,12 @@ The server tracks these Solidity events (names match the contract):
 | `API_PORT` | HTTP port for the API | `4000` |
 | `CHAIN` | `rootstock`, `rootstock-testnet`, `rsk-mainnet`, `rsk-testnet`, or `sepolia` | `rootstock` |
 | `RPC_URL` | Chain JSON-RPC endpoint (must support logs) | `https://public-node.rsk.co` |
-| `LBC_ADDRESS` | Liquidity Bridge Contract (`0x…`) | `0x000…000` |
+| `LBC_ADDRESS` | Liquidity Bridge Contract (`0x…`) — **required** at startup | — |
 | `START_BLOCK` | First block to index (bigint string) | `0` |
 | `POLL_INTERVAL_MS` | Pause between indexer rounds when caught up | `15000` |
+| `CONFIRMATIONS` | Blocks to wait behind chain head before indexing (reorg safety) | `12` |
+| `CORS_ORIGIN` | Comma-separated allowed frontend origins | `http://localhost:5173,http://localhost:5174` |
+| `ALLOW_PRIVATE_RPC` | Set to `true` to allow localhost/private RPC URLs in dev | unset |
 | `DASHBOARD_WINDOW_MS` | Rolling window for some dashboard metrics | `14` days |
 
 Example for Rootstock mainnet:
@@ -89,6 +92,8 @@ POLL_INTERVAL_MS=15000
 ```
 
 If you see **`eth_getLogs` does not exist or is not available**, switch to a provider that exposes log queries (for example Thirdweb’s Rootstock RPC above) or your own API key.
+
+The server **refuses to start** without a valid `LBC_ADDRESS`. The indexer also waits `CONFIRMATIONS` blocks behind the chain head to reduce reorg risk.
 
 ## NPM scripts
 

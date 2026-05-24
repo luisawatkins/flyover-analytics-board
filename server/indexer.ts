@@ -1,17 +1,30 @@
-import { createPublicClient, formatEther, http, parseAbiItem } from "viem";
+import {
+  createPublicClient,
+  formatEther,
+  http,
+  parseAbiItem,
+} from "viem";
 import { type Chain } from "viem";
 import { rootstock, rootstockTestnet, sepolia } from "viem/chains";
+import {
+  callForUserEvent,
+  pegInRegisteredEvent,
+  pegOutDepositEvent,
+} from "./abi";
 import { config } from "./config";
 import {
   getLastIndexedBlock,
-  setLastIndexedBlock,
-  upsertBridgeEvent,
+  indexBlockRangeTransaction,
+  type InsertBridgeEventInput,
 } from "./db";
 
 type KnownEventName =
   | "PegOutDeposit"
   | "CallForUser"
   | "PegInRegistered";
+
+// Most public RPC providers cap eth_getLogs to ~1000 blocks per request.
+const LOGS_BLOCK_RANGE = 899n;
 
 const resolveChain = (): Chain => {
   const key = config.chain.toLowerCase();
@@ -36,15 +49,15 @@ const client = createPublicClient({
   transport: http(config.rpcUrl),
 });
 
-const parseQuoteRequested = parseAbiItem(
-  "event PegOutDeposit(bytes32 indexed quoteHash, address indexed sender, uint256 amount, uint256 timestamp)",
-);
-const parseQuoteCompleted = parseAbiItem(
-  "event CallForUser(address indexed from, address indexed dest, uint256 gasLimit, uint256 value, bytes data, bool success, bytes32 quoteHash)",
-);
-const parseDepositTransferred = parseAbiItem(
-  "event PegInRegistered(bytes32 indexed quoteHash, int256 transferredAmount)",
-);
+const parseQuoteRequested = parseAbiItem(pegOutDepositEvent);
+const parseQuoteCompleted = parseAbiItem(callForUserEvent);
+const parseDepositTransferred = parseAbiItem(pegInRegisteredEvent);
+
+const eventParser = {
+  PegOutDeposit: parseQuoteRequested,
+  CallForUser: parseQuoteCompleted,
+  PegInRegistered: parseDepositTransferred,
+} as const;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -55,97 +68,131 @@ const logLine = (message: string) => {
   console.log(`[${iso}] ${message}`);
 };
 
-const upsertLog = async (
+let blockTimestampCache = new Map<bigint, number>();
+
+const getCachedBlockTimestamp = async (blockNumber: bigint): Promise<number> => {
+  const cached = blockTimestampCache.get(blockNumber);
+  if (cached !== undefined) {
+    return cached;
+  }
+  const block = await client.getBlock({ blockNumber });
+  const timestamp = toTimestamp(block.timestamp);
+  blockTimestampCache.set(blockNumber, timestamp);
+  return timestamp;
+};
+
+const extractAmountWei = (
+  eventName: KnownEventName,
+  args: Record<string, unknown>,
+): bigint => {
+  if (eventName === "CallForUser") {
+    return (args.value as bigint | undefined) ?? 0n;
+  }
+  if (eventName === "PegInRegistered") {
+    const transferred = (args.transferredAmount as bigint | undefined) ?? 0n;
+    return transferred < 0n ? -transferred : transferred;
+  }
+  return (args.amount as bigint | undefined) ?? 0n;
+};
+
+const fetchLogs = async (
   eventName: KnownEventName,
   fromBlock: bigint,
   toBlock: bigint,
 ) => {
-  let parsedCount = 0;
-  const logs = await client.getLogs({
+  return client.getLogs({
     address: config.lbcAddress,
-    event:
-      eventName === "PegOutDeposit"
-        ? parseQuoteRequested
-        : eventName === "CallForUser"
-          ? parseQuoteCompleted
-          : parseDepositTransferred,
+    event: eventParser[eventName],
     fromBlock,
     toBlock,
   });
+};
 
-  for (const log of logs) {
-    const block = await client.getBlock({ blockNumber: log.blockNumber });
-    const timestamp = toTimestamp(block.timestamp);
-    const args = log.args as Record<string, unknown>;
-    const amount =
-      eventName === "CallForUser"
-        ? ((args.value as bigint | undefined) ?? 0n)
-        : eventName === "PegInRegistered"
-          ? (() => {
-              const t =
-                (args.transferredAmount as bigint | undefined) ?? 0n;
-              return t < 0n ? -t : t;
-            })()
-          : ((args.amount as bigint | undefined) ?? 0n);
-    const quoteHashRaw = (args.quoteHash as string | undefined) ?? null;
-    const quoteHash = quoteHashRaw ? quoteHashRaw.toLowerCase() : null;
-    const lp = (args.from as string | undefined) ?? null;
-    const requester = (args.sender as string | undefined) ?? null;
-    const success =
-      typeof args.success === "boolean" ? (args.success as boolean) : null;
-    const pegoutTimestamp =
-      eventName === "PegOutDeposit"
-        ? Number((args.timestamp as bigint | undefined) ?? BigInt(timestamp))
-        : timestamp;
+type FetchedLog = Awaited<ReturnType<typeof fetchLogs>>[number];
 
-    upsertBridgeEvent({
-      eventName,
-      quoteHash,
-      lpAddress: lp,
-      requesterAddress: requester,
-      amountWei: amount.toString(),
-      success,
-      blockNumber: Number(log.blockNumber),
-      blockTimestamp: pegoutTimestamp,
-      txHash: log.transactionHash,
-      logIndex: Number(log.logIndex),
-    });
-    parsedCount += 1;
+const logToBridgeEvent = async (
+  eventName: KnownEventName,
+  log: FetchedLog,
+): Promise<InsertBridgeEventInput> => {
+  const timestamp = await getCachedBlockTimestamp(log.blockNumber);
+  const args = log.args as Record<string, unknown>;
+  const amount = extractAmountWei(eventName, args);
+  const quoteHashRaw = (args.quoteHash as string | undefined) ?? null;
+  const quoteHash = quoteHashRaw ? quoteHashRaw.toLowerCase() : null;
+  const lp = (args.from as string | undefined) ?? null;
+  const requester = (args.sender as string | undefined) ?? null;
+  const success =
+    typeof args.success === "boolean" ? (args.success as boolean) : null;
+  const pegoutTimestamp =
+    eventName === "PegOutDeposit"
+      ? Number((args.timestamp as bigint | undefined) ?? BigInt(timestamp))
+      : timestamp;
+
+  return {
+    eventName,
+    quoteHash,
+    lpAddress: lp,
+    requesterAddress: requester,
+    amountWei: amount.toString(),
+    success,
+    blockNumber: Number(log.blockNumber),
+    blockTimestamp: pegoutTimestamp,
+    txHash: log.transactionHash,
+    logIndex: Number(log.logIndex),
+  };
+};
+
+const summarizeBatch = (
+  eventName: KnownEventName,
+  logs: FetchedLog[],
+  fromBlock: bigint,
+  toBlock: bigint,
+) => {
+  if (logs.length === 0) {
+    return;
   }
-
-  if (parsedCount > 0) {
-    const totalEth = logs.reduce((acc, l) => {
-      const a = l.args as Record<string, unknown>;
-      let v = 0n;
-      if (eventName === "CallForUser") {
-        v = (a.value as bigint | undefined) ?? 0n;
-      } else if (eventName === "PegInRegistered") {
-        const t = (a.transferredAmount as bigint | undefined) ?? 0n;
-        v = t < 0n ? -t : t;
-      } else {
-        v = (a.amount as bigint | undefined) ?? 0n;
-      }
-      return acc + v;
-    }, 0n);
-    logLine(
-      `${eventName}: +${parsedCount} events (${formatEther(totalEth)} RBTC) in blocks ${fromBlock}-${toBlock}`,
-    );
-  }
+  const totalEth = logs.reduce((acc, log) => {
+    return acc + extractAmountWei(eventName, log.args as Record<string, unknown>);
+  }, 0n);
+  logLine(
+    `${eventName}: +${logs.length} events (${formatEther(totalEth)} RBTC) in blocks ${fromBlock}-${toBlock}`,
+  );
 };
 
 const indexOnce = async (): Promise<boolean> => {
+  blockTimestampCache = new Map();
+
   const chainHead = await client.getBlockNumber();
+  const safeHead =
+    chainHead > config.confirmations ? chainHead - config.confirmations : 0n;
   const saved = getLastIndexedBlock();
   const fromBlock = saved ? saved + 1n : config.startBlock;
-  if (fromBlock > chainHead) {
+  if (fromBlock > safeHead) {
     return false;
   }
 
-  const toBlock = fromBlock + 899n > chainHead ? chainHead : fromBlock + 899n;
-  await upsertLog("PegOutDeposit", fromBlock, toBlock);
-  await upsertLog("CallForUser", fromBlock, toBlock);
-  await upsertLog("PegInRegistered", fromBlock, toBlock);
-  setLastIndexedBlock(toBlock);
+  const toBlock =
+    fromBlock + LOGS_BLOCK_RANGE > safeHead
+      ? safeHead
+      : fromBlock + LOGS_BLOCK_RANGE;
+
+  const eventNames: KnownEventName[] = [
+    "PegOutDeposit",
+    "CallForUser",
+    "PegInRegistered",
+  ];
+
+  const allEvents: InsertBridgeEventInput[] = [];
+
+  for (const eventName of eventNames) {
+    const logs = await fetchLogs(eventName, fromBlock, toBlock);
+    summarizeBatch(eventName, logs, fromBlock, toBlock);
+    for (const log of logs) {
+      allEvents.push(await logToBridgeEvent(eventName, log));
+    }
+  }
+
+  indexBlockRangeTransaction(allEvents, toBlock);
   return true;
 };
 

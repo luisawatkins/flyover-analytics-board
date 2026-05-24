@@ -59,6 +59,29 @@ export const upsertBridgeEvent = (input: InsertBridgeEventInput) =>
     success: input.success === null ? null : input.success ? 1 : 0,
   });
 
+const setLastIndexedBlockInTransaction = (block: bigint) => {
+  db.prepare(`
+    INSERT INTO indexer_state (id, last_block)
+    VALUES (1, ?)
+    ON CONFLICT(id) DO UPDATE SET last_block = excluded.last_block
+  `).run(block.toString());
+};
+
+export const indexBlockRangeTransaction = (
+  events: InsertBridgeEventInput[],
+  toBlock: bigint,
+) => {
+  const persist = db.transaction(
+    (batch: InsertBridgeEventInput[], block: bigint) => {
+      for (const input of batch) {
+        upsertBridgeEvent(input);
+      }
+      setLastIndexedBlockInTransaction(block);
+    },
+  );
+  persist(events, toBlock);
+};
+
 export const getLastIndexedBlock = (): bigint | null => {
   const row = db
     .prepare("SELECT last_block FROM indexer_state WHERE id = 1")
